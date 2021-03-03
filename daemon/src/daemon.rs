@@ -57,6 +57,7 @@ pub struct AssetDaemon {
     pub importers: ImporterMap,
     pub importer_contexts: Vec<Box<dyn ImporterContext>>,
     pub asset_dirs: Vec<PathBuf>,
+    pub clear_db_on_start: bool,
 }
 
 pub fn default_importer_contexts() -> Vec<Box<dyn ImporterContext + 'static>> {
@@ -86,6 +87,7 @@ impl Default for AssetDaemon {
             importers: importer_map,
             importer_contexts: default_importer_contexts(),
             asset_dirs: vec![PathBuf::from("assets")],
+            clear_db_on_start: false,
         }
     }
 }
@@ -164,6 +166,12 @@ impl AssetDaemon {
         self
     }
 
+    /// Force the daemon to clean the cache on start
+    pub fn with_clear_db_on_start(mut self) -> Self {
+        self.clear_db_on_start = true;
+        self
+    }
+
     pub fn run(self) -> (JoinHandle<()>, Sender<bool>) {
         let (tx, rx) = oneshot::channel();
 
@@ -199,7 +207,10 @@ impl AssetDaemon {
         };
         let asset_db = Arc::new(asset_db);
 
-        check_db_version(&asset_db)
+        try_clear_db(&asset_db, self.clear_db_on_start)
+            .await
+            .expect("failed to clear asset db");
+        set_db_version(&asset_db)
             .await
             .expect("failed to check daemon version in asset db");
 
@@ -220,6 +231,9 @@ impl AssetDaemon {
             Err(err) => panic!("failed to create cache db: {:?}", err),
         };
         let cache_db = Arc::new(cache_db);
+        try_clear_db(&cache_db, self.clear_db_on_start)
+            .await
+            .expect("failed to clear cache db");
         let artifact_cache =
             ArtifactCache::new(&cache_db).expect("failed to create artifact cache");
         let artifact_cache = Arc::new(artifact_cache);
@@ -272,13 +286,14 @@ impl AssetDaemon {
 }
 
 #[allow(clippy::string_lit_as_bytes)]
-async fn check_db_version(env: &Environment) -> Result<()> {
+async fn try_clear_db(env: &Environment, force_clear_db: bool) -> Result<()> {
     use crate::capnp_db::DBTransaction;
     let tables = AssetDaemonTables::new(env).expect("failed to create AssetDaemon tables");
     let txn = env.ro_txn().await?;
     let info_key = "daemon_info".as_bytes();
-    let daemon_info = txn.get::<data::daemon_info::Owned, &[u8]>(tables.daemon_info, &info_key)?;
+
     let mut clear_db = true;
+    let daemon_info = txn.get::<data::daemon_info::Owned, &[u8]>(tables.daemon_info, &info_key)?;
     if let Some(info) = daemon_info {
         let info = info.get()?;
         if info.get_version() == DAEMON_VERSION {
@@ -286,7 +301,7 @@ async fn check_db_version(env: &Environment) -> Result<()> {
         }
     }
 
-    if clear_db {
+    if clear_db || force_clear_db {
         let unnamed_db = env
             .create_db(None, lmdb::DatabaseFlags::default())
             .expect("failed to open unnamed DB when checking daemon info");
@@ -313,6 +328,13 @@ async fn check_db_version(env: &Environment) -> Result<()> {
         }
         txn.commit()?;
     }
+    Ok(())
+}
+
+#[allow(clippy::string_lit_as_bytes)]
+async fn set_db_version(env: &Environment) -> Result<()> {
+    let info_key = "daemon_info".as_bytes();
+    let tables = AssetDaemonTables::new(env).expect("failed to create AssetDaemon tables");
     let mut txn = env.rw_txn().await?;
     let mut value_builder = capnp::message::Builder::new_default();
     {
