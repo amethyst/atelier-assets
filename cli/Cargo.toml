@@ -10,12 +10,12 @@ publish = false
 [dependencies]
 capnp = "0.14.0"
 capnp-rpc = "0.14.0"
-tokio = { version = "1.2", features = ["io-std", "rt", "rt-multi-thread", "net", "io-util"] }
-tokio-util = { version = "0.6.1", features = ["codec", "compat"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 distill-schema = { version = "0.0.3", path = "../schema" }
 uuid = "0.8.2"
 async-trait = "0.1.22"
 crossterm = { version = "0.17", features = ["event-stream"] }
 defer = "0.1.0"
-tokio-stream = { version = "0.1.2", features = ["io-util"] }
+async-io = "1.4.1"
+async-net = "1.6.0"
+async-executor = "1.4.1"

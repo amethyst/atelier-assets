@@ -56,7 +56,7 @@ struct PackfileReaderInner {
     reader: PackfileMessageReader,
     index_by_uuid: HashMap<AssetUuid, u32>,
     assets_by_path: HashMap<String, Vec<u32>>,
-    runtime: tokio::runtime::Runtime,
+    runtime: bevy_tasks::IoTaskPool,
 }
 pub struct PackfileReader(Arc<PackfileReaderInner>);
 
@@ -82,7 +82,7 @@ impl PackfileReader {
             reader: message_reader,
             index_by_uuid,
             assets_by_path,
-            runtime: tokio::runtime::Builder::new_multi_thread().build()?,
+            runtime: bevy_tasks::IoTaskPool(bevy_tasks::TaskPoolBuilder::default().build()),
         })))
     }
 }
@@ -168,45 +168,38 @@ impl PackfileReaderInner {
 
 impl LoaderIO for PackfileReader {
     fn get_asset_metadata_with_dependencies(&mut self, request: MetadataRequest) {
-        let _guard = self.0.runtime.enter();
         let inner = self.0.clone();
-        tokio::spawn(async move {
+        self.0.runtime.spawn(async move {
             match inner.get_asset_metadata_with_dependencies_impl(&request) {
                 Ok(data) => request.complete(data),
                 Err(err) => request.error(err),
             }
-        });
+        }).detach();
     }
 
     fn get_asset_candidates(&mut self, requests: Vec<ResolveRequest>) {
-        let _guard = self.0.runtime.enter();
         for request in requests {
             let inner = self.0.clone();
-            tokio::spawn(async move {
+            self.0.runtime.spawn(async move {
                 match inner.get_asset_candidates_impl(&request) {
                     Ok(data) => request.complete(data),
                     Err(err) => request.error(err),
                 }
-            });
+            }).detach();
         }
     }
 
     fn get_artifacts(&mut self, requests: Vec<DataRequest>) {
-        let _guard = self.0.runtime.enter();
         for request in requests {
             let inner = self.0.clone();
-            tokio::spawn(async move {
+            self.0.runtime.spawn(async move {
                 match inner.get_artifact_impl(&request) {
                     Ok(data) => request.complete(data),
                     Err(err) => request.error(err),
                 }
-            });
+            }).detach();
         }
     }
 
-    fn tick(&mut self, _loader: &mut LoaderState) {}
-
-    fn with_runtime(&self, f: &mut dyn FnMut(&tokio::runtime::Runtime)) {
-        f(&self.0.runtime);
-    }
+    fn tick(&mut self, _loader: &mut LoaderState) { }
 }

@@ -13,7 +13,6 @@ use distill_core::{ArtifactMetadata, AssetMetadata, AssetRef, AssetTypeId, Asset
 use log::error;
 
 use crate::{
-    handle::{RefOp, SerdeContext},
     io::{DataRequest, LoaderIO, MetadataRequest, MetadataRequestResult, ResolveRequest},
     storage::{
         AssetLoadOp, AssetStorage, AtomicHandleAllocator, HandleAllocator, HandleOp,
@@ -1020,15 +1019,6 @@ impl Loader {
             },
             io,
         }
-    }
-
-    pub fn with_serde_context<R>(&self, tx: &Sender<RefOp>, mut f: impl FnMut() -> R) -> R {
-        let mut result = None;
-        self.io.with_runtime(&mut |runtime| {
-            result =
-                Some(runtime.block_on(SerdeContext::with(&self.data, tx.clone(), async { f() })));
-        });
-        result.unwrap()
     }
 
     /// Returns the load handle for the asset with the given UUID, if present.

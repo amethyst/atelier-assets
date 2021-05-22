@@ -11,7 +11,6 @@ pub trait LoaderIO: Send + Sync {
     fn get_asset_candidates(&mut self, requests: Vec<ResolveRequest>);
     fn get_artifacts(&mut self, requests: Vec<DataRequest>);
     fn tick(&mut self, loader: &mut LoaderState);
-    fn with_runtime(&self, f: &mut dyn FnMut(&tokio::runtime::Runtime));
 }
 
 /// A request for an asset artifact's data.

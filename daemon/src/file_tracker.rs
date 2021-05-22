@@ -21,13 +21,10 @@ use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     stream::StreamExt,
     FutureExt,
+    lock::Mutex,
 };
 use lmdb::Cursor;
 use log::{debug, info};
-use tokio::{
-    sync::{mpsc, Mutex},
-    time,
-};
 
 use crate::{
     capnp_db::{
@@ -60,6 +57,7 @@ pub struct FileTracker {
     stopping_event: event_listener::Event,
     watch_dirs: RwLock<Vec<PathBuf>>,
 }
+
 #[derive(Clone)]
 pub struct FileState {
     pub path: PathBuf,
@@ -518,7 +516,7 @@ impl FileTracker {
     }
 
     pub async fn add_dirty_file(&self, txn: &mut RwTransaction<'_>, path: &Path) -> Result<()> {
-        let metadata = match tokio::fs::metadata(path).await {
+        let metadata = match async_fs::metadata(path).await {
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(Error::IO(e)),
             Ok(metadata) => Some(watcher::file_metadata(&metadata)),
@@ -686,7 +684,7 @@ impl FileTracker {
             return;
         }
 
-        let (watcher_tx, mut watcher_rx) = mpsc::unbounded_channel();
+        let (watcher_tx, watcher_rx) = unbounded();
         let to_watch: Vec<PathBuf> = self.get_watch_dirs();
 
         // NOTE(happens): If we can't watch the dir, we want to abort
@@ -700,24 +698,32 @@ impl FileTracker {
         let mut listeners = ListenersList::new();
         let mut scan_stack = Vec::new();
 
-        let mut stopping = self.stopping_event.listen();
+        let stopping = self.stopping_event.listen().fuse();
 
         let mut listener_rx_guard = self.listener_rx.lock().await;
-        let listener_rx = listener_rx_guard.get_mut();
+
+        let listener_rx = listener_rx_guard.get_mut().fuse();
+        let watcher_rx = watcher_rx.fuse();
+
+        futures::pin_mut!(watcher_rx, listener_rx, stopping);
 
         let mut dirty = false;
 
         #[allow(unused_mut)]
         loop {
-            let mut delay = time::sleep(Duration::from_millis(40));
+            let delay = futures::FutureExt::fuse(async_io::Timer::after(Duration::from_millis(40)));
 
-            tokio::select! {
+            futures::pin_mut!(delay);
+
+            futures::select! {
                 new_listener = listener_rx.next() => listeners.register(new_listener),
-                _ = delay, if dirty => {
-                    listeners.send_event(FileTrackerEvent::Update);
-                    dirty = false;
+                _ = delay => {
+                    if dirty {
+                        listeners.send_event(FileTrackerEvent::Update);
+                        dirty = false;
+                    }
                 },
-                mut maybe_file_event = watcher_rx.recv() => {
+                mut maybe_file_event = watcher_rx.next() => {
                     if maybe_file_event.is_none() {
                         debug!("FileTracker: stopping due to exhausted watcher");
                         break;
@@ -733,7 +739,7 @@ impl FileTracker {
                             Err(err) => panic!("Error while handling file event: {}", err),
                         }
 
-                        maybe_file_event = watcher_rx.recv().now_or_never().flatten();
+                        maybe_file_event = watcher_rx.next().now_or_never().flatten();
                     }
 
                     if txn.dirty {
@@ -766,8 +772,6 @@ pub mod tests {
         time::Duration,
     };
 
-    use tokio::time::timeout;
-
     use super::*;
     use crate::{
         capnp_db::Environment,
@@ -798,7 +802,9 @@ pub mod tests {
         tracker.register_listener(tx);
 
         let tracker_clone = tracker.clone();
-        let handle = tokio::task::spawn(async move { tracker_clone.run().await });
+
+        let runtime = async_executor::Executor::new();
+        let handle = runtime.spawn(async move { tracker_clone.run().await });
         expect_event(&mut rx).await;
 
         f(tracker.clone(), rx, asset_dir.into_path()).await;
@@ -842,12 +848,12 @@ pub mod tests {
 
     pub async fn add_test_dir(asset_dir: &Path, name: &str) -> PathBuf {
         let path = PathBuf::from(asset_dir).join(name);
-        tokio::fs::create_dir(&path).await.expect("create dir");
+        async_fs::create_dir(&path).await.expect("create dir");
         path
     }
 
     pub async fn add_test_file(asset_dir: &Path, name: &str) {
-        tokio::fs::copy(
+        async_fs::copy(
             PathBuf::from("tests/file_tracker/").join(name),
             asset_dir.join(name),
         )
@@ -928,7 +934,8 @@ pub mod tests {
         }
     }
 
-    #[tokio::test]
+
+    #[async_executor::test]
     async fn test_create_file() {
         with_tracker(|t, mut rx, asset_dir| async move {
             add_test_file(&asset_dir, "test.txt").await;
@@ -940,7 +947,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_modify_file() {
         with_tracker(|t, mut rx, asset_dir| async move {
             add_test_file(&asset_dir, "test.txt").await;
@@ -949,7 +956,7 @@ pub mod tests {
             expect_dirty_file_state(&t, &asset_dir, "test.txt").await;
             clear_dirty_file_state(&t).await;
 
-            tokio::fs::File::create(asset_dir.join("test.txt"))
+            async_fs::File::create(asset_dir.join("test.txt"))
                 .await
                 .expect("truncate test file");
 
@@ -961,7 +968,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_delete_file() {
         with_tracker(|t, mut rx, asset_dir| async move {
             add_test_file(&asset_dir, "test.txt").await;
@@ -970,7 +977,7 @@ pub mod tests {
             expect_dirty_file_state(&t, &asset_dir, "test.txt").await;
             clear_dirty_file_state(&t).await;
 
-            tokio::fs::remove_file(asset_dir.join("test.txt"))
+            async_fs::remove_file(asset_dir.join("test.txt"))
                 .await
                 .expect("test file could not be deleted");
 
@@ -982,7 +989,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_create_dir() {
         with_tracker(|t, mut rx, asset_dir| async move {
             add_test_dir(&asset_dir, "testdir").await;
@@ -994,7 +1001,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_create_file_in_dir() {
         with_tracker(|t, mut rx, asset_dir| async move {
             let dir = add_test_dir(&asset_dir, "testdir").await;
@@ -1013,7 +1020,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_create_emacs_lockfile() {
         with_tracker(|t, mut rx, asset_dir| async move {
             add_symlink_file(
@@ -1030,7 +1037,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_create_symlink_dir() {
         with_tracker(|t, mut rx, asset_dir| {
             async move {
@@ -1054,7 +1061,7 @@ pub mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[async_executor::test]
     async fn test_delete_symlink_dir() {
         with_tracker(|t, mut rx, asset_dir| async move {
             let watch_dir = tempfile::tempdir().unwrap();
@@ -1067,11 +1074,11 @@ pub mod tests {
             assert!(t.get_watch_dirs() == vec![asset_dir.clone(), watch_dir.path().to_path_buf()]);
 
             #[cfg(target_family = "windows")]
-            tokio::fs::remove_dir(asset_dir.join("dir_symlink"))
+            async_fs::remove_dir(asset_dir.join("dir_symlink"))
                 .await
                 .expect("test file could not be deleted");
             #[cfg(target_family = "unix")]
-            tokio::fs::remove_file(asset_dir.join("dir_symlink"))
+            async_fs::remove_file(asset_dir.join("dir_symlink"))
                 .await
                 .expect("test file could not be deleted");
 

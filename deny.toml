@@ -21,7 +21,7 @@ skip = [
     { name = "mio", version = "0.6.23" }, # upgrade notify
     { name = "miow", version = "0.2.2" }, # upgrade notify
     { name = "cfg-if", version = "0.1.10" },
-    { name = "winapi", version = "0.2.8" }, # upgrade tokio and notify
+    { name = "winapi", version = "0.2.8" }, # upgrade notify
     { name = "redox_syscall", version = "0.1.57" }, # old version in notify
 ]
 

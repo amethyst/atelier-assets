@@ -11,6 +11,7 @@ use distill_schema::{
 pub mod shell;
 use shell::Autocomplete;
 pub use shell::Command;
+use futures::AsyncReadExt;
 
 type Promise<T> = capnp::capability::Promise<T, capnp::Error>;
 pub type DynResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -52,16 +53,16 @@ pub struct Context {
     snapshot: Rc<RefCell<Snapshot>>,
 }
 
-pub async fn create_context() -> Result<Context, Box<dyn std::error::Error>> {
+pub async fn create_context(local: &async_executor::LocalExecutor<'_>) -> Result<Context, Box<dyn std::error::Error>> {
     use std::net::ToSocketAddrs;
     let addr = "127.0.0.1:9999".to_socket_addrs()?.next().unwrap();
-    let stream = tokio::net::TcpStream::connect(&addr).await?;
+    let stream = async_net::TcpStream::connect(&addr).await?;
     stream.set_nodelay(true).unwrap();
-    use tokio_util::compat::*;
-    let (reader, writer) = stream.into_split();
+
+    let (reader, writer) = stream.split();
     let rpc_network = Box::new(twoparty::VatNetwork::new(
-        reader.compat(),
-        writer.compat_write(),
+        reader,
+        writer,
         rpc_twoparty_capnp::Side::Client,
         *ReaderOptions::new()
             .nesting_limit(64)
@@ -72,14 +73,18 @@ pub async fn create_context() -> Result<Context, Box<dyn std::error::Error>> {
 
     let hub: asset_hub::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
     let _disconnector = rpc_system.get_disconnector();
-    tokio::task::spawn_local(rpc_system);
+
+    local.spawn(rpc_system).detach();
+
     let snapshot = Rc::new(RefCell::new({
         let request = hub.get_snapshot_request();
         request.send().promise.await?.get()?.get_snapshot()?
     }));
+
     let listener: asset_hub::listener::Client = capnp_rpc::new_client(ListenerImpl {
         snapshot: snapshot.clone(),
     });
+
     let mut request = hub.register_listener_request();
     request.get().set_listener(listener);
 

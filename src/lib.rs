@@ -222,7 +222,7 @@ mod tests {
         let daemon_port = 2500;
         let daemon_address = format!("127.0.0.1:{}", daemon_port);
 
-        let (daemon_handle, tx) = spawn_daemon(&daemon_address);
+        let (daemon_handle, mut tx) = spawn_daemon(&daemon_address);
 
         let mut loader = Loader::new(Box::new(RpcIO::new(daemon_address).unwrap()));
         let handle = loader.add_ref(
@@ -261,7 +261,7 @@ mod tests {
         let daemon_port = 2505;
         let daemon_address = format!("127.0.0.1:{}", daemon_port);
 
-        let (daemon_handle, tx) = spawn_daemon(&daemon_address);
+        let (daemon_handle, mut tx) = spawn_daemon(&daemon_address);
 
         let mut loader = Loader::new(Box::new(RpcIO::new(daemon_address).unwrap()));
         let handle = loader.add_ref(
@@ -339,7 +339,7 @@ mod tests {
         daemon_address: &str,
     ) -> (
         std::thread::JoinHandle<()>,
-        tokio::sync::oneshot::Sender<bool>,
+        async_oneshot::Sender<bool>,
     ) {
         let daemon_address = daemon_address
             .parse()
