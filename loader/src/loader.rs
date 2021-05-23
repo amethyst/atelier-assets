@@ -13,7 +13,6 @@ use distill_core::{ArtifactMetadata, AssetMetadata, AssetRef, AssetTypeId, Asset
 use log::error;
 
 use crate::{
-    handle::{RefOp, SerdeContext},
     io::{DataRequest, LoaderIO, MetadataRequest, MetadataRequestResult, ResolveRequest},
     storage::{
         AssetLoadOp, AssetStorage, AtomicHandleAllocator, HandleAllocator, HandleOp,
@@ -311,14 +310,12 @@ impl LoaderState {
                     *state
                 );
             }
-        } else {
-            self.load_states.get(&load).map(|h| {
-                assert!(
-                    h.refs.fetch_sub(num_refs, Ordering::Relaxed) < usize::MAX - num_refs,
-                    "refcount underflow for asset {:?}",
-                    self.get_load_info(load),
-                );
-            });
+        } else if let Some(h) = self.load_states.get(&load) {
+            assert!(
+                h.refs.fetch_sub(num_refs, Ordering::Relaxed) < usize::MAX - num_refs,
+                "refcount underflow for asset {:?}",
+                self.get_load_info(load),
+            );
         }
     }
 
@@ -1010,25 +1007,16 @@ impl Loader {
                 indirect_to_load: DashMap::new(),
                 indirect_table: IndirectionTable(Arc::new(DashMap::new())),
                 responses: IORequestChannels {
+                    data_rx,
+                    data_tx,
                     metadata_rx,
                     metadata_tx,
-                    data_tx,
-                    data_rx,
-                    resolve_tx,
                     resolve_rx,
+                    resolve_tx,
                 },
             },
             io,
         }
-    }
-
-    pub fn with_serde_context<R>(&self, tx: &Sender<RefOp>, mut f: impl FnMut() -> R) -> R {
-        let mut result = None;
-        self.io.with_runtime(&mut |runtime| {
-            result =
-                Some(runtime.block_on(SerdeContext::with(&self.data, tx.clone(), async { f() })));
-        });
-        result.unwrap()
     }
 
     /// Returns the load handle for the asset with the given UUID, if present.

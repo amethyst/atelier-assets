@@ -1,13 +1,12 @@
 use distill_cli::{shell::Shell, *};
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let local = tokio::task::LocalSet::new();
-    runtime.block_on(local.run_until(async_main()))
+    let local = async_executor::LocalExecutor::new();
+    async_io::block_on(local.run(async_main(&local)))
 }
 
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = create_context().await?;
+async fn async_main(local: &async_executor::LocalExecutor<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = create_context(local).await?;
 
     let mut shell = Shell::new(ctx);
 

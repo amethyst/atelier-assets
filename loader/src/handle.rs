@@ -263,7 +263,7 @@ impl AssetHandle for WeakHandle {
     }
 }
 
-tokio::task_local! {
+crate::task_local! {
     static LOADER: &'static dyn LoaderInfoProvider;
     static REFOP_SENDER: Sender<RefOp>;
 }

@@ -8,9 +8,9 @@ use std::{
 
 use distill_core::utils::canonicalize_path;
 use notify::{watcher, DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::{Error, Result};
+use futures::channel::mpsc::UnboundedSender;
 
 /// The purpose of DirWatcher is to provide enough information to
 /// determine which files may be candidates for going through the asset import process.
@@ -106,11 +106,11 @@ impl DirWatcher {
     {
         let canonical_dir = canonicalize_path(dir);
         self.asset_tx
-            .send(FileEvent::ScanStart(canonical_dir.clone()))
+            .unbounded_send(FileEvent::ScanStart(canonical_dir.clone()))
             .map_err(|_| Error::SendError)?;
         let result = self.scan_directory_recurse(&canonical_dir, evt_create);
         self.asset_tx
-            .send(FileEvent::ScanEnd(canonical_dir, self.dirs.clone()))
+            .unbounded_send(FileEvent::ScanEnd(canonical_dir, self.dirs.clone()))
             .map_err(|_| Error::SendError)?;
         result
     }
@@ -130,7 +130,7 @@ impl DirWatcher {
                         Ok(entry) => {
                             let evt = self.handle_notify_event(evt_create(entry.path()), true)?;
                             if let Some(evt) = evt {
-                                self.asset_tx.send(evt).map_err(|_| Error::SendError)?;
+                                self.asset_tx.unbounded_send(evt).map_err(|_| Error::SendError)?;
                             }
                             let metadata;
                             match entry.metadata() {
@@ -154,7 +154,7 @@ impl DirWatcher {
         for dir in &self.dirs.clone() {
             if let Err(err) = self.scan_directory(&dir, &|path| DebouncedEvent::Create(path)) {
                 self.asset_tx
-                    .send(FileEvent::FileError(err))
+                    .unbounded_send(FileEvent::FileError(err))
                     .expect("Failed to send file error event. Ironic...");
             }
         }
@@ -165,7 +165,7 @@ impl DirWatcher {
                     Ok(maybe_event) => {
                         if let Some(evt) = maybe_event {
                             log::debug!("File event: {:?}", evt);
-                            self.asset_tx.send(evt).unwrap();
+                            self.asset_tx.unbounded_send(evt).unwrap();
                         }
                     }
                     Err(err) => match err {
@@ -175,7 +175,7 @@ impl DirWatcher {
                                     self.scan_directory(&dir, &|path| DebouncedEvent::Create(path))
                                 {
                                     self.asset_tx
-                                        .send(FileEvent::FileError(err))
+                                        .unbounded_send(FileEvent::FileError(err))
                                         .expect("Failed to send file error event");
                                 }
                             }
@@ -183,13 +183,13 @@ impl DirWatcher {
                         Error::Exit => break,
                         _ => self
                             .asset_tx
-                            .send(FileEvent::FileError(err))
+                            .unbounded_send(FileEvent::FileError(err))
                             .expect("Failed to send file error event"),
                     },
                 },
                 Err(_) => {
                     self.asset_tx
-                        .send(FileEvent::FileError(Error::RecvError))
+                        .unbounded_send(FileEvent::FileError(Error::RecvError))
                         .expect("Failed to send file error event");
 
                     return;
@@ -253,7 +253,7 @@ impl DirWatcher {
                         }
                         self.symlink_map.remove(src);
                         self.asset_tx
-                            .send(FileEvent::Unwatch(to_unwatch))
+                            .unbounded_send(FileEvent::Unwatch(to_unwatch))
                             .map_err(|_| Error::SendError)?;
                     }
                     Err(err) => {
@@ -274,7 +274,7 @@ impl DirWatcher {
                         }
                         self.symlink_map.insert(dst.clone(), link_path.clone());
                         self.asset_tx
-                            .send(FileEvent::Watch(link_path))
+                            .unbounded_send(FileEvent::Watch(link_path))
                             .map_err(|_| Error::SendError)?;
                     }
                     Err(Error::Notify(notify::Error::Generic(text)))
